@@ -25,16 +25,22 @@ def lb_radio_artist(seed_artist: str, max_similar_artists: int, num_recordings_p
                  ), similar_artists AS (
                      SELECT CASE WHEN mbid0 = mbid::UUID THEN mbid1::TEXT ELSE mbid0::TEXT END AS similar_artist_mbid
                           , jsonb_object_field(metadata, :algorithm)::integer AS score
+                          , PERCENT_RANK() OVER (PARTITION BY mbid ORDER BY jsonb_object_field(metadata, :algorithm)::integer) AS rank
                        FROM similarity.artist
                        JOIN mbids
                          ON TRUE
                       WHERE (mbid0 = mbid::UUID OR mbid1 = mbid::UUID)
                         AND metadata ? :algorithm
-                   ORDER BY score DESC
+                 ), select_similar_artists AS ( 
+                     SELECT similar_artist_mbid
+                          , score
+                       FROM similar_artists
+                      WHERE rank >= :begin_percentage and rank < :end_percentage
+                      ORDER BY random()
                       LIMIT :max_similar_artists
                  ), similar_artists_and_orig_artist AS (
                      SELECT *
-                       FROM similar_artists
+                       FROM select_similar_artists
                       UNION
                      SELECT *
                        FROM mbids
