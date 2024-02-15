@@ -784,7 +784,9 @@ def _get_listen_type(listen_type):
 @crossdomain
 @ratelimit()
 def get_artist_radio_recordings(seed_artist_mbid):
-    """ Get recordings for use in LB radio with the given seed artist.
+    """ Get recordings for use in LB radio with the given seed artist. The endpoint
+    returns a dict of all the similar artists, including the seed artist. For each artists,
+    there will be a list of dicts that contain recording_mbid, similar_artist_mbid and total_listen_count.
 
     .. code-block:: json
 
@@ -823,5 +825,5 @@ def get_artist_radio_recordings(seed_artist_mbid):
     except ValueError:
         raise APIBadRequest(f"end_percent: '{end_percent}' is not a valid number")
 
-    return lb_radio_artist(db_conn, seed_artist_mbid, max_similar_artists, max_recordings_per_artist,
+    return lb_radio_artist(seed_artist_mbid, max_similar_artists, max_recordings_per_artist,
                            begin_percent, end_percent)

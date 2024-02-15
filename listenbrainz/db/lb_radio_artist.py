@@ -1,20 +1,24 @@
+from collections import defaultdict
 from datetime import datetime
 from typing import List, Iterable
 
+import json
 import sqlalchemy
+from listenbrainz.webserver import ts_conn
 
 SIMILARITY_ALGORITHM = "session_based_days_7500_session_300_contribution_3_threshold_15_limit_50_filter_True_skip_30"
 
 # TODO: Choose similar artists according to mode
 
 
-def lb_radio_artist(db_conn, seed_artist: str, max_similar_artists: int, num_recordings_per_artist: int, begin_percentage: float,
+def lb_radio_artist(seed_artist: str, max_similar_artists: int, num_recordings_per_artist: int, begin_percentage: float,
                     end_percentage: float) -> List[dict]:
 
     # The query requires a count, which is safe to leave 0
     seed_artist = (seed_artist, 0)
 
-    result = db_conn.execute(
+
+    result = ts_conn.execute(
         sqlalchemy.text("""
          WITH mbids(mbid, score) AS (
                      VALUES :seed_artist
@@ -52,11 +56,9 @@ def lb_radio_artist(db_conn, seed_artist: str, max_similar_artists: int, num_rec
                        FROM top_recordings
                       WHERE rank >= :begin_percentage and rank < :end_percentage   -- select the range of results here
                  )
-                     SELECT similar_artist_mbid
+                     SELECT similar_artist_mbid::TEXT
                           , recording_mbid
                           , total_listen_count
-                          , rank
-                          , rownum
                        FROM randomize
                       WHERE rownum < :num_recordings_per_artist"""), {
             "seed_artist": seed_artist,
@@ -67,4 +69,8 @@ def lb_radio_artist(db_conn, seed_artist: str, max_similar_artists: int, num_rec
             "num_recordings_per_artist": num_recordings_per_artist
         })
 
-    return result.mappings().all()
+    artists = defaultdict(list)
+    for row in result.mappings().all():
+        artists[row["similar_artist_mbid"]].append(dict(row))
+
+    return artists
