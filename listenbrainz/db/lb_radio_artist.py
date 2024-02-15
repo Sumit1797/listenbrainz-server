@@ -5,24 +5,29 @@ import sqlalchemy
 
 SIMILARITY_ALGORITHM = "session_based_days_7500_session_300_contribution_3_threshold_15_limit_50_filter_True_skip_30"
 
+# TODO: Choose similar artists according to mode
 
-def lb_radio_artist(db_conn, max_similar_artists: int, num_recordings_per_artist: int, begin_percentage: float,
+
+def lb_radio_artist(db_conn, seed_artist: str, max_similar_artists: int, num_recordings_per_artist: int, begin_percentage: float,
                     end_percentage: float) -> List[dict]:
+
+    # The query requires a count, which is safe to leave 0
+    seed_artist = (seed_artist, 0)
 
     result = db_conn.execute(
         sqlalchemy.text("""
          WITH mbids(mbid, score) AS (
-                     VALUES ('8f6bd1e4-fbe1-4f50-aa9b-94c450ec0f11', 0) -- seed artist(s)
+                     VALUES :seed_artist
                  ), similar_artists AS (
                      SELECT CASE WHEN mbid0 = mbid::UUID THEN mbid1::TEXT ELSE mbid0::TEXT END AS similar_artist_mbid
-                          , jsonb_object_field(metadata, ?)::integer AS score
+                          , jsonb_object_field(metadata, :algorithm)::integer AS score
                        FROM similarity.artist
                        JOIN mbids
                          ON TRUE
                       WHERE (mbid0 = mbid::UUID OR mbid1 = mbid::UUID)
-                        AND metadata ? 'session_based_days_7500_session_300_contribution_3_threshold_15_limit_50_filter_True_skip_30'
+                        AND metadata ? :algorithm
                    ORDER BY score DESC
-                      LIMIT ? -- max number of similar artists
+                      LIMIT :max_similar_artists
                  ), similar_artists_and_orig_artist AS (
                      SELECT *
                        FROM similar_artists
@@ -45,7 +50,7 @@ def lb_radio_artist(db_conn, max_similar_artists: int, num_recordings_per_artist
                           , rank                                                                                              
                           , ROW_NUMBER() OVER (PARTITION BY similar_artist_mbid ORDER BY RANDOM()) AS rownum
                        FROM top_recordings
-                      WHERE rank >= begin_percentage and rank < end_percentage   -- select the range of results here
+                      WHERE rank >= :begin_percentage and rank < :end_percentage   -- select the range of results here
                  )
                      SELECT similar_artist_mbid
                           , recording_mbid
@@ -53,7 +58,13 @@ def lb_radio_artist(db_conn, max_similar_artists: int, num_recordings_per_artist
                           , rank
                           , rownum
                        FROM randomize
-                      WHERE rownum < ?"""),
-        (SIMILARITY_ALGORITH, max_similar_artists, begin_percentage, end_percentage, num_recordings_per_artist))
+                      WHERE rownum < :num_recordings_per_artist"""), {
+            "seed_artist": seed_artist,
+            "algorithm": SIMILARITY_ALGORITHM,
+            "max_similar_artists": max_similar_artists,
+            "begin_percentage": begin_percentage,
+            "end_percentage": end_percentage,
+            "num_recordings_per_artist": num_recordings_per_artist
+        })
 
     return result.mappings().all()
