@@ -29,9 +29,7 @@ class SimilarityDataset(DatabaseDataset):
 
     def run_post_processing(self, cursor, message):
         query = SQL("COMMENT ON TABLE {table} IS {comment}").format(
-            table=self._get_table_name(),
-            comment=Literal(f"This dataset is created using the algorithm {message['algorithm']}")
-        )
+            table=self._get_table_name(), comment=Literal(f"This dataset is created using the algorithm {message['algorithm']}"))
         cursor.execute(query)
 
 
@@ -92,7 +90,7 @@ def get(curs, table, mbids, algorithm, count):
              WHERE rnum <= {count}
     """).format(table=Identifier("similarity", table), algorithm=Literal(algorithm), count=Literal(count))
 
-    results = execute_values(curs, query, [(mbid,) for mbid in mbids], "(%s::UUID)", fetch=True)
+    results = execute_values(curs, query, [(mbid, ) for mbid in mbids], "(%s::UUID)", fetch=True)
 
     similar_mbid_index = {}
     score_index = {}
@@ -102,6 +100,7 @@ def get(curs, table, mbids, algorithm, count):
         similar_mbid_index[similar_mbid] = row["mbid"]
         score_index[similar_mbid] = row["score"]
         mbids.append(similar_mbid)
+
     return mbids, score_index, similar_mbid_index
 
 
@@ -116,4 +115,5 @@ def get_artists(mb_curs, ts_curs, mbids, algorithm, count):
     for item in metadata:
         item["score"] = score_idx.get(item["artist_mbid"])
         item["reference_mbid"] = mbid_idx.get(item["artist_mbid"])
+
     return metadata
