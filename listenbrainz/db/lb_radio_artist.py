@@ -6,7 +6,7 @@ import json
 import psycopg2
 from psycopg2.extras import DictCursor
 
-SIMILARITY_ALGORITHM = "session_based_days_7500_session_300_contribution_3_threshold_15_limit_50_filter_True_skip_30"
+SIMILARITY_ALGORITHM = "session_based_days_7500_session_300_contribution_3_threshold_10_limit_100_filter_True_skip_30"
 
 # TODO:
 #  Add this table creation:
@@ -32,23 +32,17 @@ SIMILARITY_ALGORITHM = "session_based_days_7500_session_300_contribution_3_thres
 def lb_radio_artist(seed_artist: str, max_similar_artists: int, num_recordings_per_artist: int, begin_percentage: float,
                     end_percentage: float) -> List[dict]:
 
-    # The query requires a count, which is safe to leave 0
-    seed_artist = (seed_artist, 0)
-
-
-
-                  WITH mbids(mbid, score) AS (
+    foo = """                  WITH mbids(mbid, score) AS (
                                VALUES ('8f6bd1e4-fbe1-4f50-aa9b-94c450ec0f11', 0)
                            ), similar_artists AS (
                                SELECT CASE WHEN mbid0 = mbid::UUID THEN mbid1::TEXT ELSE mbid0::TEXT END AS similar_artist_mbid
-                                    , jsonb_object_field(metadata, 'session_based_days_7500_session_300_contribution_3_threshold_15_limit_50_filter_True_skip_30')::integer AS score
-                                    , PERCENT_RANK() OVER (PARTITION BY mbid ORDER BY jsonb_object_field(metadata, 'session_based_days_7500_session_300_contribution_3_threshold_15_limit_50_filter_True_skip_30')::integer) AS rank
-                                 FROM similarity.artist
+                                    , sa.score
+                                    , PERCENT_RANK() OVER (PARTITION BY mbid ORDER BY sa.score) AS rank
+                                 FROM similarity.artist sa
                                  JOIN mbids
                                    ON TRUE
                                 WHERE (mbid0 = mbid::UUID OR mbid1 = mbid::UUID)
-                                  AND metadata ? 'session_based_days_7500_session_300_contribution_3_threshold_15_limit_50_filter_True_skip_30'
-                           )
+                           ), knockdown AS (
                                SELECT similar_artist_mbid
                                     , CASE WHEN similar_artist_mbid = oa.artist_mbid::TEXT THEN score * oa.factor ELSE score END AS score   
                                     , rank
@@ -56,32 +50,62 @@ def lb_radio_artist(seed_artist: str, max_similar_artists: int, num_recordings_p
                             LEFT JOIN similarity.overhyped_artists oa
                                    ON sa.similar_artist_mbid = oa.artist_mbid::TEXT
                              ORDER BY score DESC
-                           ;
-
+                                LIMIT 15
+                           ), select_similar_artists AS (
                                SELECT similar_artist_mbid
-                              , score
+                                    , score
                                  FROM knockdown
-                                WHERE rank >= .75 and rank < 1.0
+                                WHERE rank >= .75 and rank < .9
                                 ORDER BY score
                                 LIMIT 15
+                           ), similar_artists_and_orig_artist AS (
+                               SELECT *
+                                 FROM select_similar_artists
+                                UNION
+                               SELECT *
+                                 FROM mbids
+                           ), combine_similarity AS (
+                               SELECT similar_artist_mbid
+                                    , recording_mbid
+                                    , total_listen_count
+                                    , total_user_count
+                                 FROM popularity.top_recording tr
+                                 JOIN similar_artists_and_orig_artist sao
+                                 ON tr.artist_mbid = sao.similar_artist_mbid::UUID
+                                UNION ALL
+                               SELECT similar_artist_mbid
+                                    , recording_mbid
+                                    , total_listen_count
+                                    , total_user_count
+                                 FROM popularity.mlhd_top_recording tmr
+                                 JOIN similar_artists_and_orig_artist sao2
+                                 ON tmr.artist_mbid = sao2.similar_artist_mbid::UUID
+                           )
+                               SELECT similar_artist_mbid
+                                    , recording_mbid
+                                    , SUM(total_listen_count) AS total_listen_count
+                                    , SUM(total_user_count) AS total_user_count
+                                 FROM combine_similarity
+                             GROUP BY recording_mbid, similar_artist_mbid
 
-                        ;
-                           ), knockdown AS (
+                           ;  """
 
 
+    # The query requires a count, which is safe to leave 0
+    seed_artist = (seed_artist, 0)
+    similar_artist_limit = 15
     with psycopg2.connect(current_app.config["SQLALCHEMY_TIMESCALE_URI"]) as conn, conn.cursor(cursor_factory=DictCursor) as curs:
         curs.execute(
             f"""WITH mbids(mbid, score) AS (
                                VALUES %s
                            ), similar_artists AS (
                                SELECT CASE WHEN mbid0 = mbid::UUID THEN mbid1::TEXT ELSE mbid0::TEXT END AS similar_artist_mbid
-                                    , jsonb_object_field(metadata, %s)::integer AS score
-                                    , PERCENT_RANK() OVER (PARTITION BY mbid ORDER BY jsonb_object_field(metadata, %s)::integer) AS rank
-                                 FROM similarity.artist
+                                    , sa.score
+                                    , PERCENT_RANK() OVER (PARTITION BY mbid ORDER BY sa.score) AS rank
+                                 FROM similarity.artist sa
                                  JOIN mbids
                                    ON TRUE
                                 WHERE (mbid0 = mbid::UUID OR mbid1 = mbid::UUID)
-                                  AND metadata ? %s
                            ), knockdown AS (
                                SELECT similar_artist_mbid
                                     , CASE WHEN similar_artist_mbid = oa.artist_mbid::TEXT THEN score * oa.factor ELSE score END AS score   
@@ -89,12 +113,14 @@ def lb_radio_artist(seed_artist: str, max_similar_artists: int, num_recordings_p
                                  FROM similar_artists sa
                             LEFT JOIN similarity.overhyped_artists oa
                                    ON sa.similar_artist_mbid = oa.artist_mbid::TEXT
-                           ), select_similar_artists AS ( 
+                             ORDER BY score DESC
+                                LIMIT %s
+                           ), select_similar_artists AS (
                                SELECT similar_artist_mbid
-                              , score
+                                    , score
                                  FROM knockdown
                                 WHERE rank >= %s and rank < %s
-                                ORDER BY random()
+                                ORDER BY score
                                 LIMIT %s
                            ), similar_artists_and_orig_artist AS (
                                SELECT *
@@ -102,15 +128,41 @@ def lb_radio_artist(seed_artist: str, max_similar_artists: int, num_recordings_p
                                 UNION
                                SELECT *
                                  FROM mbids
+                           ), combine_similarity AS (
+                               SELECT similar_artist_mbid
+                                    , artist_mbid
+                                    , recording_mbid
+                                    , total_listen_count
+                                    , total_user_count
+                                 FROM popularity.top_recording tr
+                                 JOIN similar_artists_and_orig_artist sao
+                                   ON tr.artist_mbid = sao.similar_artist_mbid::UUID
+                                UNION ALL
+                               SELECT similar_artist_mbid
+                                    , artist_mbid
+                                    , recording_mbid
+                                    , total_listen_count
+                                    , total_user_count
+                                 FROM popularity.mlhd_top_recording tmr
+                                 JOIN similar_artists_and_orig_artist sao2
+                                   ON tmr.artist_mbid = sao2.similar_artist_mbid::UUID
+                           ), group_similarity AS (
+                               SELECT similar_artist_mbid
+                                    , artist_mbid
+                                    , recording_mbid
+                                    , SUM(total_listen_count) AS total_listen_count
+                                    , SUM(total_user_count) AS total_user_count
+                                 FROM combine_similarity
+                             GROUP BY recording_mbid, artist_mbid, similar_artist_mbid
                            ), top_recordings AS (
                                SELECT sa.similar_artist_mbid
-                                    , pr.recording_mbid
+                                    , gs.recording_mbid
                                     , total_listen_count
                                     , PERCENT_RANK() OVER (PARTITION BY similar_artist_mbid ORDER BY sa.similar_artist_mbid, total_listen_count ) AS rank
-                                 FROM popularity.top_recording pr
+                                 FROM group_similarity gs
                                  JOIN similar_artists_and_orig_artist sa
-                                   ON sa.similar_artist_mbid::UUID = pr.artist_mbid
-                             GROUP BY sa.similar_artist_mbid, pr.total_listen_count, pr.recording_mbid
+                                   ON sa.similar_artist_mbid::UUID = gs.artist_mbid
+                             GROUP BY sa.similar_artist_mbid, gs.total_listen_count, gs.recording_mbid
                            ), randomize AS (
                                SELECT similar_artist_mbid
                                     , recording_mbid    
@@ -125,7 +177,7 @@ def lb_radio_artist(seed_artist: str, max_similar_artists: int, num_recordings_p
                                     , total_listen_count
                                  FROM randomize
                                 WHERE rownum < %s""",
-            (seed_artist, SIMILARITY_ALGORITHM, SIMILARITY_ALGORITHM, SIMILARITY_ALGORITHM, begin_percentage, end_percentage,
+            (seed_artist, similar_artist_limit, begin_percentage, end_percentage,
              max_similar_artists, begin_percentage, end_percentage, num_recordings_per_artist))
 
         artists = defaultdict(list)
